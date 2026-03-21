@@ -7,8 +7,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 
 <!-- Google APIs -->
-<script src="https://apis.google.com/js/api.js"></script>
-<script src="https://accounts.google.com/gsi/client"></script>
+<script src="https://apis.google.com/js/api.js" onload="gapiLoaded()" onerror="apiLoadError('gapi')"></script>
+<script src="https://accounts.google.com/gsi/client" onload="gsiLoaded()" onerror="apiLoadError('gsi')"></script>
 
 <style>
 /* ════════════════════════════════════════════
@@ -860,7 +860,9 @@ function saveConfig() {
   var key = document.getElementById('cfgApiKey').value.trim();
   if (!cid || !key) { alert('Ingresa ambas credenciales.'); return; }
   localStorage.setItem(CFG_KEY, JSON.stringify({clientId:cid, apiKey:key}));
-  location.reload();
+  var btn = document.getElementById('btnSaveConfig');
+  if (btn) { btn.textContent = 'Conectando...'; btn.disabled = true; }
+  tryInitGapi();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1588,32 +1590,75 @@ document.getElementById('modalBg').addEventListener('click',function(e){if(e.tar
 function showToast(msg){var t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.classList.remove("show");},2800);}
 
 // ═══════════════════════════════════════════════════════════════
-// INIT
+// INIT — robust two-library loading system
 // ═══════════════════════════════════════════════════════════════
-window.onload = function() {
-  // Check if already has a session token
+var _gapiLoaded = false;
+var _gsiLoaded  = false;
+
+function gapiLoaded() { _gapiLoaded = true; tryInitGapi(); }
+function gsiLoaded()  { _gsiLoaded  = true; tryInitGapi(); }
+function apiLoadError(lib) {
+  console.error('Failed to load:', lib);
+  var el = document.getElementById('driveInfo');
+  if (el) el.textContent = 'Error cargando Google APIs. Verifica tu conexion a internet.';
+}
+
+function tryInitGapi() {
+  if (!_gapiLoaded || !_gsiLoaded) return;
+  var cfg = getConfig();
+  if (!cfg) { showView('splash'); return; }
+
+  // Restore session if available
   var tok = sessionStorage.getItem('gar_tok');
   var usr = sessionStorage.getItem('gar_user');
-  if (tok && usr) {
-    try {
-      currentUser = JSON.parse(usr);
-      gapi.load('client', function() {
-        var cfg = getConfig();
-        if (!cfg) { showView('splash'); return; }
-        gapi.client.init({apiKey:cfg.apiKey, discoveryDocs:['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']})
-        .then(function(){
-          gapi.client.setToken({access_token:tok});
-          gdriveReady=true;
-          ensureFolder(function(err){
-            if(err){showView('login');return;}
-            loadUsersFile(function(){launchApp();});
-          });
-        }).catch(function(){showView('login');});
+
+  gapi.load('client', function() {
+    gapi.client.init({
+      apiKey: cfg.apiKey,
+      discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
+    }).then(function() {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: cfg.clientId,
+        scope: SCOPES,
+        callback: onTokenReceived
       });
-    } catch(e) { showView('login'); }
-  } else {
-    initGapi();
-  }
+
+      if (tok && usr) {
+        try {
+          currentUser = JSON.parse(usr);
+          gapi.client.setToken({access_token: tok});
+          gdriveReady = true;
+          ensureFolder(function(err) {
+            if (err) { showView('login'); return; }
+            loadUsersFile(function() { launchApp(); });
+          });
+        } catch(e) { showView('login'); }
+      } else {
+        showView('login');
+        var el = document.getElementById('driveInfo');
+        if (el) el.textContent = 'Conectado con Google. Inicia sesion para continuar.';
+        // Reset config button if visible
+        var btn = document.getElementById('btnSaveConfig');
+        if (btn) { btn.textContent = 'Guardar y Conectar ->'; btn.disabled = false; }
+      }
+    }).catch(function(e) {
+      var msg = (e && (e.error || e.message)) || 'verifica Client ID y API Key';
+      var el = document.getElementById('driveInfo');
+      if (el) el.textContent = 'Error Google API: ' + msg;
+      // Reset config button
+      var btn = document.getElementById('btnSaveConfig');
+      if (btn) { btn.textContent = 'Guardar y Conectar ->'; btn.disabled = false; }
+      showView('login');
+    });
+  });
+}
+
+window.onload = function() {
+  // Libraries may already be loaded (cached)
+  if (typeof gapi !== 'undefined') { _gapiLoaded = true; }
+  if (typeof google !== 'undefined' && google.accounts) { _gsiLoaded = true; }
+  if (_gapiLoaded && _gsiLoaded) tryInitGapi();
+  // If not loaded yet, the onload callbacks on the script tags will trigger tryInitGapi
 };
 </script>
 </body>
