@@ -378,27 +378,18 @@ textarea{resize:vertical;min-height:60px;}
     <div class="splash-logo">G<span>A</span>R</div>
     <div class="splash-sub">Grupo Ram Asesores · GNP Seguros</div>
     <div class="splash-card">
-      <h2>⚙️ Configuración Inicial</h2>
-      <p>Conecta tu Google Drive para activar el portal. Solo necesitas hacer esto una vez por dispositivo.</p>
+      <h2>Configuracion Inicial</h2>
+      <p>Conecta tu Google Drive para activar el portal.</p>
       <div class="setup-field">
         <label>Client ID de Google</label>
         <input type="text" id="cfgClientId" placeholder="xxxxx.apps.googleusercontent.com">
-        <small>Desde Google Cloud Console → APIs → OAuth 2.0 → Client ID</small>
       </div>
       <div class="setup-field">
         <label>API Key de Google</label>
         <input type="text" id="cfgApiKey" placeholder="AIzaSy...">
-        <small>Google Cloud Console → APIs → Credenciales → API Key</small>
       </div>
-      <button class="btn-google" id="btnSaveConfig" onclick="saveConfig()">Guardar y Conectar →</button>
-      <div class="setup-note">
-        <strong>¿Cómo obtener las credenciales?</strong><br>
-        1. Ve a <a href="https://console.cloud.google.com" target="_blank" style="color:var(--blue)">console.cloud.google.com</a><br>
-        2. Crea un proyecto → Habilita Google Drive API<br>
-        3. Crea credenciales: OAuth 2.0 (Web App) y API Key<br>
-        4. En "Orígenes JS autorizados" agrega la URL de este archivo<br>
-        Solo el admin necesita configurar esto una vez.
-      </div>
+      <button class="btn-google" id="btnSaveConfig" onclick="saveConfig()">Guardar y Conectar</button>
+      <div id="cfgStatus" style="margin-top:12px;padding:10px 14px;border-radius:8px;font-size:12px;display:none"></div>
     </div>
   </div>
 </div>
@@ -855,14 +846,51 @@ var allClients   = [];   // cached for admin DB view
 function getConfig() {
   try { return JSON.parse(localStorage.getItem(CFG_KEY)||'null'); } catch(e){return null;}
 }
+function cfgMsg(msg, color) {
+  var el = document.getElementById('cfgStatus');
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.background = color === 'red' ? '#FADBD8' : color === 'green' ? '#D5F5E3' : '#EBF4FF';
+  el.style.color = color === 'red' ? '#C0392B' : color === 'green' ? '#1A8A4A' : '#1A4F9C';
+  el.textContent = msg;
+}
+
 function saveConfig() {
   var cid = document.getElementById('cfgClientId').value.trim();
   var key = document.getElementById('cfgApiKey').value.trim();
-  if (!cid || !key) { alert('Ingresa ambas credenciales.'); return; }
+  if (!cid || !key) { cfgMsg('Ingresa ambas credenciales.', 'red'); return; }
+  if (!cid.includes('.apps.googleusercontent.com')) {
+    cfgMsg('El Client ID debe terminar en .apps.googleusercontent.com', 'red'); return;
+  }
+  if (!key.startsWith('AIza')) {
+    cfgMsg('La API Key debe comenzar con AIza...', 'red'); return;
+  }
   localStorage.setItem(CFG_KEY, JSON.stringify({clientId:cid, apiKey:key}));
   var btn = document.getElementById('btnSaveConfig');
   if (btn) { btn.textContent = 'Conectando...'; btn.disabled = true; }
-  tryInitGapi();
+  cfgMsg('Credenciales guardadas. Cargando Google APIs...', 'blue');
+
+  if (!_gapiLoaded || !_gsiLoaded) {
+    cfgMsg('Cargando librerias de Google (' + (_gapiLoaded?'gapi OK':'gapi...') + ' / ' + (_gsiLoaded?'gsi OK':'gsi...') + ')', 'blue');
+    var wait = 0;
+    var interval = setInterval(function() {
+      wait += 500;
+      if (_gapiLoaded && _gsiLoaded) {
+        clearInterval(interval);
+        cfgMsg('Librerias listas. Iniciando conexion...', 'blue');
+        tryInitGapi();
+      } else if (wait > 10000) {
+        clearInterval(interval);
+        cfgMsg('Error: No se pudieron cargar las librerias de Google. Verifica tu conexion a internet y recarga la pagina.', 'red');
+        if (btn) { btn.textContent = 'Guardar y Conectar'; btn.disabled = false; }
+      } else {
+        cfgMsg('Esperando librerias... (' + (_gapiLoaded?'gapi OK':'gapi...') + ' / ' + (_gsiLoaded?'gsi OK':'gsi...') + ')', 'blue');
+      }
+    }, 500);
+  } else {
+    cfgMsg('Librerias listas. Iniciando conexion con Google Drive...', 'blue');
+    tryInitGapi();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1607,21 +1635,30 @@ function tryInitGapi() {
   if (!_gapiLoaded || !_gsiLoaded) return;
   var cfg = getConfig();
   if (!cfg) { showView('splash'); return; }
+  cfgMsg('Inicializando cliente Google...', 'blue');
 
-  // Restore session if available
   var tok = sessionStorage.getItem('gar_tok');
   var usr = sessionStorage.getItem('gar_user');
 
   gapi.load('client', function() {
+    cfgMsg('Cargando API de Drive...', 'blue');
     gapi.client.init({
       apiKey: cfg.apiKey,
       discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
     }).then(function() {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: cfg.clientId,
-        scope: SCOPES,
-        callback: onTokenReceived
-      });
+      cfgMsg('API lista. Configurando autenticacion...', 'blue');
+      try {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: cfg.clientId,
+          scope: SCOPES,
+          callback: onTokenReceived
+        });
+      } catch(e) {
+        cfgMsg('Error en Client ID: ' + e.message + '. Verifica que sea correcto.', 'red');
+        var btn = document.getElementById('btnSaveConfig');
+        if (btn) { btn.textContent = 'Guardar y Conectar'; btn.disabled = false; }
+        return;
+      }
 
       if (tok && usr) {
         try {
@@ -1634,21 +1671,27 @@ function tryInitGapi() {
           });
         } catch(e) { showView('login'); }
       } else {
-        showView('login');
-        var el = document.getElementById('driveInfo');
-        if (el) el.textContent = 'Conectado con Google. Inicia sesion para continuar.';
-        // Reset config button if visible
-        var btn = document.getElementById('btnSaveConfig');
-        if (btn) { btn.textContent = 'Guardar y Conectar ->'; btn.disabled = false; }
+        cfgMsg('Todo listo. Redirigiendo al login...', 'green');
+        setTimeout(function() {
+          showView('login');
+          var el = document.getElementById('driveInfo');
+          if (el) el.textContent = 'Google Drive conectado. Inicia sesion para continuar.';
+          el.style.color = '#1A8A4A';
+          var btn = document.getElementById('btnSaveConfig');
+          if (btn) { btn.textContent = 'Guardar y Conectar'; btn.disabled = false; }
+        }, 800);
       }
     }).catch(function(e) {
-      var msg = (e && (e.error || e.message)) || 'verifica Client ID y API Key';
-      var el = document.getElementById('driveInfo');
-      if (el) el.textContent = 'Error Google API: ' + msg;
-      // Reset config button
+      var errDetail = '';
+      if (e) {
+        if (e.error) errDetail = e.error;
+        else if (e.message) errDetail = e.message;
+        else if (e.result && e.result.error) errDetail = e.result.error.message;
+        else errDetail = JSON.stringify(e);
+      }
+      cfgMsg('Error de Google API: ' + errDetail + '. Verifica tu API Key y que Google Drive API este habilitada.', 'red');
       var btn = document.getElementById('btnSaveConfig');
-      if (btn) { btn.textContent = 'Guardar y Conectar ->'; btn.disabled = false; }
-      showView('login');
+      if (btn) { btn.textContent = 'Guardar y Conectar'; btn.disabled = false; }
     });
   });
 }
